@@ -1,4 +1,4 @@
-name: Build Dzen Text v1.3
+name: Build Dzen Text v1.3.1
 
 on:
   push:
@@ -22,6 +22,14 @@ jobs:
           cat dzen-build/src.b64.part* | base64 -d | tar -xzf - -C dzen-src
           test -f dzen-src/Dzen-Text-source-v1.3/settings.gradle
 
+      - name: Prepare built-in synonym dictionary and v1.3.1 patch
+        shell: bash
+        run: |
+          curl -fL --retry 3 https://raw.githubusercontent.com/egorkaru/synonym_dictionary/master/dictionary.json -o /tmp/abramov.json
+          python3 dzen-build/patch-v131.py dzen-src/Dzen-Text-source-v1.3 /tmp/abramov.json
+          grep -q "versionName '1.3.1'" dzen-src/Dzen-Text-source-v1.3/app/build.gradle
+          test -s dzen-src/Dzen-Text-source-v1.3/app/src/main/assets/synonyms_compact.json
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -43,5 +51,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Dzen-Text-v1.3-unsigned
+          name: Dzen-Text-v1.3.1-unsigned
           path: dzen-src/Dzen-Text-source-v1.3/app/build/outputs/apk/release/app-release-unsigned.apk
