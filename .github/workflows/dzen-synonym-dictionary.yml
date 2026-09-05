@@ -1,0 +1,26 @@
+name: Prepare Dzen Synonym Dictionary
+
+on:
+  push:
+    branches:
+      - dzen-text-v1.3-build
+    paths:
+      - '.github/workflows/dzen-synonym-dictionary.yml'
+  workflow_dispatch:
+
+jobs:
+  dictionary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Abramov synonym dictionary
+        shell: bash
+        run: |
+          mkdir -p dictionary
+          curl -fL --retry 3 https://raw.githubusercontent.com/egorkaru/synonym_dictionary/master/dictionary.json -o dictionary/Dzen-Text-synonyms-Abramov.json
+          curl -fL --retry 3 https://raw.githubusercontent.com/egorkaru/synonym_dictionary/master/LICENSE -o dictionary/LICENSE-MIT.txt
+          test -s dictionary/Dzen-Text-synonyms-Abramov.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dzen-Text-full-synonym-dictionary
+          path: dictionary/
