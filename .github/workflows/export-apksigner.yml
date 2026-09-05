@@ -1,0 +1,29 @@
+name: Export Android apksigner
+
+on:
+  push:
+    branches:
+      - dzen-text-v1.3-build
+    paths:
+      - '.github/workflows/export-apksigner.yml'
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: android-actions/setup-android@v3
+      - name: Prepare apksigner bundle
+        shell: bash
+        run: |
+          BT=$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          echo "Using $BT"
+          mkdir -p apksigner-bundle/lib
+          cp "$BT/apksigner" apksigner-bundle/
+          cp "$BT/lib/apksigner.jar" apksigner-bundle/lib/
+          chmod +x apksigner-bundle/apksigner
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apksigner
+          path: apksigner-bundle/
