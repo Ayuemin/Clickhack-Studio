@@ -1,0 +1,155 @@
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -8,7 +8,7 @@
+         applicationId 'ru.dzenprep.texteditor'
+         minSdk 24
+         targetSdk 35
+-        versionCode 14
+-        versionName '1.3.1'
++        versionCode 15
++        versionName '1.3.2'
+     }
+ }
+--- a/app/src/main/java/ru/dzenprep/texteditor/MainActivity.java
++++ b/app/src/main/java/ru/dzenprep/texteditor/MainActivity.java
+@@ -50,6 +50,7 @@
+     private final Map<String, List<String>> bundledSynonymMap = new HashMap<>(); // встроенный компактный словарь
+     private String synonymName = "";
+     private int synonymCount = 0;
++    private volatile String bundledDictionaryError = "";
+ 
+     @Override
+     public void onCreate(Bundle state) {
+@@ -196,6 +197,7 @@
+                 out.put("name", synonymName);
+                 out.put("count", synonymCount);
+                 out.put("builtinCount", bundledSynonymMap.size());
++                out.put("builtinError", bundledDictionaryError);
+                 return out.toString();
+             } catch (Exception e) {
+                 return "{\"count\":0}";
+@@ -273,17 +275,44 @@
+     }
+ 
+     private void loadBundledDictionary() {
+-        try (InputStream in = getAssets().open("synonyms_compact.json");
+-             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+-            byte[] buf = new byte[8192];
+-            int n;
+-            while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+-            Map<String, List<String>> parsed = parseDictionary(decodeText(out.toByteArray()));
++        bundledDictionaryError = "";
++        try (InputStream in = getAssets().open("synonyms_compact.json")) {
++            Map<String, List<String>> parsed = parseCompactStreaming(in);
+             synchronized (bundledSynonymMap) {
+                 bundledSynonymMap.clear();
+                 bundledSynonymMap.putAll(parsed);
+             }
+-        } catch (Exception ignored) { }
++            if (parsed.isEmpty()) bundledDictionaryError = "пустой встроенный словарь";
++        } catch (Exception e) {
++            bundledDictionaryError = e.getClass().getSimpleName();
++        }
++    }
++
++    private Map<String, List<String>> parseCompactStreaming(InputStream in) throws Exception {
++        Map<String, List<String>> out = new HashMap<>();
++        JsonReader reader = new JsonReader(new InputStreamReader(in, StandardCharsets.UTF_8));
++        try {
++            reader.beginObject();
++            while (reader.hasNext()) {
++                String name = reader.nextName();
++                List<String> vals = new ArrayList<>();
++                try {
++                    reader.beginArray();
++                    while (reader.hasNext()) {
++                        try { addSyn(vals, reader.nextString()); }
++                        catch (Exception e) { reader.skipValue(); }
++                    }
++                    reader.endArray();
++                } catch (Exception e) {
++                    reader.skipValue();
++                }
++                putSynonyms(out, name, vals);
++            }
++            reader.endObject();
++        } finally {
++            try { reader.close(); } catch (Exception ignored) { }
++        }
++        return out;
+     }
+ 
+     private Map<String, List<String>> parseDictionaryBytes(byte[] bytes) throws Exception {
+--- a/app/src/main/assets/www/index.html
++++ b/app/src/main/assets/www/index.html
+@@ -4,7 +4,7 @@
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+ <meta name="color-scheme" content="light dark">
+-<title>Дзен Текст 1.3.1</title>
++<title>Дзен Текст 1.3.2</title>
+ <style>
+ :root{--bg:#f6f4f0;--surface:#ffffff;--surface2:#efede8;--text:#1f2328;--muted:#72767d;--border:#dedbd4;--accent:#d65c43;--accentSoft:#f7e2dd;--shadow:0 8px 28px rgba(30,30,30,.08);--editorFont:system-ui,-apple-system,"Segoe UI",sans-serif;--fontSize:18px;--lineHeight:1.65}
+ @media (prefers-color-scheme:dark){:root[data-theme="system"]{--bg:#141517;--surface:#1d1f22;--surface2:#27292d;--text:#f2f2f2;--muted:#a7abb1;--border:#35383d;--accent:#ef785e;--accentSoft:#3b2926;--shadow:none}}
+@@ -148,6 +148,9 @@
+  ['навык','навыка','навыку','навыком','навыке','навыки','навыков','навыкам','навыками','навыках'],
+  ['стаж','стажа','стажу','стажем','стаже','стажи','стажей','стажам','стажами','стажах'],
+  ['знание','знания','знанию','знанием','знании','знания','знаний','знаниям','знаниями','знаниях']);
++addAlignedForms(['хочу','хочешь','хочет','хотим','хотите','хотят','хотел','хотела','хотело','хотели'],
++ ['желаю','желаешь','желает','желаем','желаете','желают','желал','желала','желало','желали'],
++ ['стремлюсь','стремишься','стремится','стремимся','стремитесь','стремятся','стремился','стремилась','стремилось','стремились']);
+ Object.assign(synonymForms,{
+  'можно':['возможно','допустимо','получится'],'нужно':['стоит','следует','необходимо'],'важно':['существенно','принципиально','значимо'],
+  'например':['к примеру','скажем'],'поэтому':['из-за этого','по этой причине'],'также':['ещё','кроме того'],'однако':['но','вместе с тем'],
+@@ -157,7 +160,27 @@
+ });
+ function preserveCase(src,repl){if(!repl)return repl;if(src===src.toUpperCase()&&/[A-Za-zА-Яа-яЁё]/.test(src))return repl.toUpperCase();if(src[0]&&src[0]===src[0].toUpperCase())return repl.charAt(0).toUpperCase()+repl.slice(1);return repl}
+ function externalDictLookup(key){try{if(window.AndroidDictionary&&typeof AndroidDictionary.lookup==='function'){const raw=AndroidDictionary.lookup(key);const o=raw?JSON.parse(raw):null;return o&&Array.isArray(o.synonyms)?o.synonyms:[]}}catch(e){}return (window.browserSynonymMap&&window.browserSynonymMap[key])||[]}
+-function lemmaCandidates(w){const out=[w],seen=new Set(out);const add=x=>{if(x&&x.length>2&&!seen.has(x)){seen.add(x);out.push(x)}};const rules=[['ами',['','а']],['ями',['я','ь','й']],['ов',['']],['ев',['й','ь','']],['ей',['я','ь','й','']],['ам',['','а']],['ям',['я','ь','й']],['ах',['','а']],['ях',['я','ь','й']],['ом',['']],['ем',['ь','й','е','']],['у',['']],['ю',['я','й','ь','']],['а',['']],['я',['','ь','й','е']],['ы',['','а']],['и',['','а','я','ь','й']],['е',['','а','о','я','ь']]];for(const [end,adds] of rules){if(w.endsWith(end)&&w.length>end.length+2){const stem=w.slice(0,-end.length);for(const a of adds)add(stem+a)}}return out.slice(0,14)}
++function lemmaCandidates(w){
++ const out=[w],seen=new Set(out);const add=x=>{if(x&&x.length>2&&!seen.has(x)){seen.add(x);out.push(x)}};
++ const irregular={
++  'хочу':'хотеть','хочешь':'хотеть','хочет':'хотеть','хотим':'хотеть','хотите':'хотеть','хотят':'хотеть','хотел':'хотеть','хотела':'хотеть','хотело':'хотеть','хотели':'хотеть',
++  'могу':'мочь','можешь':'мочь','может':'мочь','можем':'мочь','можете':'мочь','могут':'мочь','мог':'мочь','могла':'мочь','могли':'мочь',
++  'иду':'идти','идёшь':'идти','идет':'идти','идёт':'идти','идем':'идти','идём':'идти','идете':'идти','идёте':'идти','идут':'идти','шёл':'идти','шел':'идти','шла':'идти','шли':'идти',
++  'вижу':'видеть','видишь':'видеть','видит':'видеть','видим':'видеть','видите':'видеть','видят':'видеть',
++  'даю':'давать','даёшь':'давать','дает':'давать','даёт':'давать','даем':'давать','даём':'давать','даете':'давать','даёте':'давать','дают':'давать'
++ };
++ if(irregular[w])add(irregular[w]);
++ const vrules=[
++  ['етесь',['иться','аться','яться','еться']],['итесь',['иться']],['ятся',['иться']],['атся',['аться']],['ишься',['иться']],['ится',['иться']],['имся',['иться']],['юсь',['иться','аться','яться','еться']],['усь',['иться','аться']],
++  ['ете',['ать','ять','еть']],['ешь',['ать','ять','еть']],['ет',['ать','ять','еть']],['ем',['ать','ять','еть']],['ют',['ать','ять']],['ают',['ать']],['яют',['ять']],
++  ['ите',['ить']],['ишь',['ить']],['ит',['ить']],['им',['ить']],['ят',['ить']],['ат',['ать','ить']],
++  ['ю',['ть','ить','ать','ять']],['у',['ть','ить','ать']],['ла',['ть']],['ло',['ть']],['ли',['ть']],['л',['ть']]
++ ];
++ for(const [end,adds] of vrules){if(w.endsWith(end)&&w.length>end.length+1){const stem=w.slice(0,-end.length);for(const a of adds)add(stem+a)}}
++ const nrules=[['ами',['','а']],['ями',['я','ь','й']],['ого',['ый','ий','ой']],['ему',['ый','ий']],['ому',['ый','ой']],['ыми',['ый','ий']],['ими',['ий']],['ых',['ый']],['их',['ий']],['ую',['ая']],['юю',['яя']],['ая',['ый']],['яя',['ий']],['ые',['ый']],['ие',['ий']],['ов',['']],['ев',['й','ь','']],['ей',['я','ь','й','']],['ам',['','а']],['ям',['я','ь','й']],['ах',['','а']],['ях',['я','ь','й']],['ом',['']],['ем',['ь','й','е','']],['у',['']],['ю',['я','й','ь','']],['а',['']],['я',['','ь','й','е']],['ы',['','а']],['и',['','а','я','ь','й']],['е',['','а','о','я','ь']]];
++ for(const [end,adds] of nrules){if(w.endsWith(end)&&w.length>end.length+2){const stem=w.slice(0,-end.length);for(const a of adds)add(stem+a)}}
++ return out.slice(0,32)
++}
+ function nounForms(lemma){const x=lemma.toLocaleLowerCase('ru-RU'),f={nom_sg:x};const hard=i=>/[гкхжчшщц]$/i.test(i);if(x.endsWith('а')){const st=x.slice(0,-1),g=st+(hard(st)?'и':'ы');Object.assign(f,{gen_sg:g,dat_sg:st+'е',acc_sg:st+'у',ins_sg:st+'ой',prep_sg:st+'е',nom_pl:g,gen_pl:st,dat_pl:st+'ам',ins_pl:st+'ами',prep_pl:st+'ах'})}else if(x.endsWith('я')){const st=x.slice(0,-1);Object.assign(f,{gen_sg:st+'и',dat_sg:st+'е',acc_sg:st+'ю',ins_sg:st+'ей',prep_sg:st+'е',nom_pl:st+'и',gen_pl:st+'ь',dat_pl:st+'ям',ins_pl:st+'ями',prep_pl:st+'ях'})}else if(x.endsWith('о')){const st=x.slice(0,-1);Object.assign(f,{gen_sg:st+'а',dat_sg:st+'у',acc_sg:x,ins_sg:st+'ом',prep_sg:st+'е',nom_pl:st+'а',gen_pl:st,dat_pl:st+'ам',ins_pl:st+'ами',prep_pl:st+'ах'})}else if(x.endsWith('е')){const st=x.slice(0,-1);Object.assign(f,{gen_sg:st+'я',dat_sg:st+'ю',acc_sg:x,ins_sg:st+'ем',prep_sg:st+'е',nom_pl:st+'я',gen_pl:st+'й',dat_pl:st+'ям',ins_pl:st+'ями',prep_pl:st+'ях'})}else if(x.endsWith('й')){const st=x.slice(0,-1);Object.assign(f,{gen_sg:st+'я',dat_sg:st+'ю',acc_sg:x,ins_sg:st+'ем',prep_sg:st+'е',nom_pl:st+'и',gen_pl:st+'ев',dat_pl:st+'ям',ins_pl:st+'ями',prep_pl:st+'ях'})}else if(x.endsWith('ь')){const st=x.slice(0,-1);Object.assign(f,{gen_sg:st+'я',dat_sg:st+'ю',acc_sg:x,ins_sg:st+'ем',prep_sg:st+'е',nom_pl:st+'и',gen_pl:st+'ей',dat_pl:st+'ям',ins_pl:st+'ями',prep_pl:st+'ях'})}else{const st=x,pl=st+(hard(st)?'и':'ы');Object.assign(f,{gen_sg:st+'а',dat_sg:st+'у',acc_sg:x,ins_sg:st+'ом',prep_sg:st+'е',nom_pl:pl,gen_pl:st+'ов',dat_pl:st+'ам',ins_pl:st+'ами',prep_pl:st+'ах'})}return f}
+ function adaptExternalForm(surface,matchedLemma,candidate){if(!candidate||/\s|[-–—]/.test(candidate))return candidate;const sf=nounForms(matchedLemma);let tag=null;const low=surface.toLocaleLowerCase('ru-RU');for(const [k,v] of Object.entries(sf)){if(v===low){tag=k;break}}if(!tag||tag==='nom_sg')return candidate;const cf=nounForms(candidate);return cf[tag]||candidate}
+ function suggestionsForWord(word){const lower=word.toLocaleLowerCase('ru-RU'),out=[];const add=x=>{if(x&&x.toLocaleLowerCase('ru-RU')!==lower&&!out.some(y=>y.toLocaleLowerCase('ru-RU')===x.toLocaleLowerCase('ru-RU')))out.push(x)};(synonymForms[lower]||[]).forEach(add);let matched=null,ext=[];for(const k of lemmaCandidates(lower)){const arr=externalDictLookup(k);if(arr&&arr.length){matched=k;ext=arr;break}}if(matched)ext.forEach(x=>add(adaptExternalForm(lower,matched,String(x).trim())));return out.map(x=>preserveCase(word,x)).slice(0,10)}
+@@ -212,12 +235,12 @@
+ function stopSpeak(){if(window.AndroidTTS&&typeof AndroidTTS.stop==='function')AndroidTTS.stop();if('speechSynthesis' in window)try{speechSynthesis.cancel()}catch(e){}setSpeaking(false)}
+ function setSpeaking(v){speaking=v;const b=document.getElementById('speakBtn');b.classList.toggle('stop',v);b.setAttribute('aria-label',v?'Остановить озвучку':'Озвучить');b.title=v?'Стоп':'Озвучить';document.getElementById('speakText').textContent=v?'Стоп':'Озвучить';document.getElementById('speakIcon').innerHTML=v?'<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>':'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4Z"/><path d="M15 9a4 4 0 0 1 0 6M17.5 6.5a8 8 0 0 1 0 11"/></svg>'}
+ window.browserSynonymMap={};
+-function updateDictStatus(){const el=document.getElementById('dictStatus');let txt='Встроенный словарь: загружается…';try{if(window.AndroidDictionary&&typeof AndroidDictionary.status==='function'){const o=JSON.parse(AndroidDictionary.status()||'{}');const built=Number(o.builtinCount||0);txt=built?`Встроенный словарь: <b>${built}</b> слов`:'Встроенный словарь: не загружен';if(o.count)txt+=`<br>Внешний: <b>${escapeHtml(o.name||'словарь')}</b> · ${o.count} слов`;else txt+='<br>Внешний словарь: не загружен'}}catch(e){}if(window.browserSynonymCount)txt=`Внешний словарь: <b>${escapeHtml(window.browserSynonymName||'словарь')}</b> · ${window.browserSynonymCount} слов (сеанс)`;el.innerHTML=txt}
++function updateDictStatus(){const el=document.getElementById('dictStatus');let txt='Встроенный словарь: проверяю…';try{if(window.AndroidDictionary&&typeof AndroidDictionary.status==='function'){const o=JSON.parse(AndroidDictionary.status()||'{}');const built=Number(o.builtinCount||0);if(built)txt=`Встроенный словарь: <b>${built}</b> слов · готов`;else if(o.builtinError)txt=`Встроенный словарь: <b>ошибка</b> (${escapeHtml(String(o.builtinError))})`;else txt='Встроенный словарь: не загружен';if(o.count)txt+=`<br>Внешний: <b>${escapeHtml(o.name||'словарь')}</b> · ${o.count} слов`;else txt+='<br>Внешний словарь: не загружен'}else txt='Встроенный словарь: доступен только в установленном приложении'}catch(e){txt='Встроенный словарь: не удалось получить статус'}if(window.browserSynonymCount)txt+=`<br>Словарь браузера: <b>${escapeHtml(window.browserSynonymName||'словарь')}</b> · ${window.browserSynonymCount} слов`;el.innerHTML=txt}
+ function chooseSynonymDictionary(){if(window.AndroidDictionary&&typeof AndroidDictionary.pick==='function'){AndroidDictionary.pick();return}document.getElementById('synonymFileInput').click()}
+ function clearSynonymDictionary(){if(window.AndroidDictionary&&typeof AndroidDictionary.clear==='function'){AndroidDictionary.clear();updateDictStatus();toast('Внешний словарь удалён');return}window.browserSynonymMap={};window.browserSynonymCount=0;updateDictStatus();toast('Внешний словарь удалён')}
+ function parseBrowserDictionary(text,name){try{const src=String(text||'').trim(),map={};if(src.startsWith('{')){const o=JSON.parse(src);if(Array.isArray(o.wordlist)){for(const it of o.wordlist){if(!it||!it.name||!Array.isArray(it.synonyms))continue;map[String(it.name).toLocaleLowerCase('ru-RU')]=it.synonyms.map(String).filter(Boolean)}}else{for(const [k,v] of Object.entries(o)){const a=Array.isArray(v)?v:(typeof v==='string'?v.split(/[|;,]/):[]);if(a.length)map[k.toLocaleLowerCase('ru-RU')]=a.map(x=>String(x).trim()).filter(Boolean)}}}else{for(const line of src.split(/\r?\n/)){const m=line.match(/^\s*([^=:\t]+)\s*[=:\t]\s*(.+)$/);if(!m)continue;const a=m[2].split(/[|;,]/).map(x=>x.trim()).filter(Boolean);if(a.length)map[m[1].trim().toLocaleLowerCase('ru-RU')]=a}}window.browserSynonymMap=map;window.browserSynonymCount=Object.keys(map).length;window.browserSynonymName=name||'словарь';updateDictStatus();toast(`Словарь загружен: ${window.browserSynonymCount} слов`)}catch(e){toast('Не удалось разобрать словарь')}}
+ window.onNativeDictionaryLoaded=(name,count)=>{updateDictStatus();toast(`Словарь загружен: ${count} слов`)};window.onNativeDictionaryError=(msg)=>toast(msg||'Не удалось загрузить словарь');
+-function openSettings(){syncSettingsUI();document.getElementById('settingsBackdrop').classList.add('open')}
++function openSettings(){syncSettingsUI();updateDictStatus();document.getElementById('settingsBackdrop').classList.add('open');setTimeout(updateDictStatus,120)}
+ function backdropClick(e){if(e.target.id==='settingsBackdrop')e.currentTarget.classList.remove('open')}
+ function syncSettingsUI(){fontSelect.value=settings.font;sizeRange.value=settings.size;lineRange.value=settings.line;themeSelect.value=settings.theme;wpmRange.value=settings.wpm;ttsRange.value=settings.tts;autosaveSwitch.checked=settings.autosave;codeSwitch.checked=settings.showCode;headingCheck.checked=settings.headingCheck;headingMin.value=settings.headingMin;headingMax.value=settings.headingMax;sentenceCheck.checked=settings.sentenceCheck;sentenceMax.value=settings.sentenceMax;paragraphCheck.checked=settings.paragraphCheck;paragraphMax.value=settings.paragraphMax;frequentCheck.checked=settings.frequentCheck;frequentMin.value=settings.frequentMin;nearbyCheck.checked=settings.nearbyCheck;structureCheck.checked=settings.structureCheck;structureMax.value=settings.structureMax;riskCheck.checked=settings.riskCheck;riskWords.value=settings.riskWords||'';updateSettingLabels()}
+ function applySettings(){settings={...settings,font:fontSelect.value,size:+sizeRange.value,line:+lineRange.value,theme:themeSelect.value,wpm:+wpmRange.value,tts:+ttsRange.value,autosave:autosaveSwitch.checked,showCode:codeSwitch.checked,headingCheck:headingCheck.checked,headingMin:+headingMin.value,headingMax:+headingMax.value,sentenceCheck:sentenceCheck.checked,sentenceMax:+sentenceMax.value,paragraphCheck:paragraphCheck.checked,paragraphMax:+paragraphMax.value,frequentCheck:frequentCheck.checked,frequentMin:+frequentMin.value,nearbyCheck:nearbyCheck.checked,structureCheck:structureCheck.checked,structureMax:+structureMax.value,riskCheck:riskCheck.checked,riskWords:riskWords.value};if(settings.headingMin>=settings.headingMax)settings.headingMin=Math.max(3,settings.headingMax-5);localStorage.setItem('dzenSettings',JSON.stringify(settings));applyVisualSettings();render();updateSettingLabels()}
+@@ -228,6 +251,6 @@
+ let toastTimer;function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove('show'),2300)}
+ editor.addEventListener('input',()=>{if(replacementState)closeReplacement();render()});editor.addEventListener('keydown',e=>{if(e.key==='Tab'){e.preventDefault();const s=editor.selectionStart,en=editor.selectionEnd;editor.setRangeText('    ',s,en,'end')}});document.getElementById('fileInput').addEventListener('change',e=>{const f=e.target.files&&e.target.files[0];e.target.value='';if(!f)return;const r=new FileReader();r.onload=()=>loadFileText(String(r.result||''),f.name);r.onerror=()=>toast('Не удалось прочитать файл');r.readAsText(f,'UTF-8')});document.getElementById('synonymFileInput').addEventListener('change',e=>{const f=e.target.files&&e.target.files[0];e.target.value='';if(!f)return;const r=new FileReader();r.onload=()=>parseBrowserDictionary(String(r.result||''),f.name);r.onerror=()=>toast('Не удалось прочитать словарь');r.readAsText(f,'UTF-8')});document.getElementById('manualReplacement').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();applyManualReplacement()}});
+ window.onNativeTtsDone=()=>setSpeaking(false);window.onNativeTtsError=(msg)=>{setSpeaking(false);toast(msg||'Ошибка системной озвучки')};document.addEventListener('visibilitychange',()=>{if(document.hidden&&speaking)stopSpeak()});
+-applyVisualSettings();if(settings.autosave){const d=localStorage.getItem('dzenDraft');if(d)editor.value=d}syncSettingsUI();render();
++applyVisualSettings();if(settings.autosave){const d=localStorage.getItem('dzenDraft');if(d)editor.value=d}syncSettingsUI();render();setTimeout(updateDictStatus,80);setTimeout(updateDictStatus,800);
+ </script>
+ </body></html>
