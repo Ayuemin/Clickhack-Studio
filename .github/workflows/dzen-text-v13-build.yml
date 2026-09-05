@@ -1,0 +1,47 @@
+name: Build Dzen Text v1.3
+
+on:
+  push:
+    branches:
+      - dzen-text-v1.3-build
+    paths:
+      - 'dzen-build/**'
+      - '.github/workflows/dzen-text-v13-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore project
+        shell: bash
+        run: |
+          mkdir -p dzen-src
+          cat dzen-build/src.b64.part* | base64 -d | tar -xzf - -C dzen-src
+          test -f dzen-src/Dzen-Text-source-v1.3/settings.gradle
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: yes | sdkmanager --licenses >/dev/null || true
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Build release APK
+        working-directory: dzen-src/Dzen-Text-source-v1.3
+        run: gradle --no-daemon :app:assembleRelease
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dzen-Text-v1.3-unsigned
+          path: dzen-src/Dzen-Text-source-v1.3/app/build/outputs/apk/release/app-release-unsigned.apk
